@@ -1,0 +1,26 @@
+name: stub
+
+services:
+  stub:
+    build: .
+    image: ssfp-stub:1.0
+    container_name: ssfp-stub
+    restart: unless-stopped
+    user: "101:101"
+    read_only: true
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 64m
+    cpus: 0.5
+    pids_limit: 64
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 3s
+      retries: 3

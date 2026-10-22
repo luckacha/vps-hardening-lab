@@ -194,3 +194,60 @@ APT::Periodic::Unattended-Upgrade "1";`
 4. Ping и policy routing:
    Ping оставил: ufw отвечает на него по умолчанию, скрытие почти ничего не дает (сервер и так находят по открытым портам), а для диагностики полезно.
    Policy routing из-за VPN оказался не нужен: xray на сервере работает как обычный прокси на 127.0.0.1:10809, TUN-интерфейса нет, в ip rule только стандартные правила. Закреплять юнитом нечего.
+
+### Слой «Nginx»
+
+Замер до (SSL Labs и securityheaders.com):
+SSL Labs: A (HSTS max-age=300 - TOO SHORT, только http/1.1, нет DNS CAA)
+securityheaders: D (из заголовков только HSTS и X-Content-Type-Options)
+
+1. Уборка:
+   В sites-enabled висели сайты GitLab и заброшенного проекта, оба отдавали 502 - бэкендов давно нет. Удалил конфиги, сертификат gitlab.ssfp.ru и DNS-запись gitlab:
+   sudo rm /etc/nginx/sites-enabled/gitlab /etc/nginx/sites-available/gitlab
+   sudo certbot delete --cert-name gitlab.ssfp.ru
+   Вместо старого сайта на ssfp.ru теперь заглушка, она крутится в контейнере на 127.0.0.1:8080 (подробнее в слое Docker), nginx на хосте делает TLS и проксирует.
+   server_tokens off и TLS 1.2/1.3 уже стояли в nginx.conf и в конфиге certbot.
+
+2. Дефолтный server (sites-available/00-default):
+   Без него на запрос по голому IP отвечал первый сайт, вместе с сертификатом ssfp.ru - любой сканер по IP узнавал домен.
+   На 80 - return 444 (nginx молча закрывает соединение), на 443 - ssl_reject_handshake on (рукопожатие обрывается до отдачи сертификата, самоподписанный сертификат не нужен).
+
+3. Сайт ssfp.ru (sites-available/ssfp.ru):
+   Порт 80 только делает 301 на https, if-блоки certbot убрал (server_name и так ограничивает, остальное ловит дефолтный server).
+   http2 on.
+   limit_except GET - заглушке нужен только GET (HEAD входит), остальное 403.
+   limit_req zone=perip burst=20 nodelay - зона в conf.d/hardening.conf: 10 запросов в секунду с IP, короткий всплеск до 20 проходит, сверх - 429 (limit_req_status 429, чтобы в логах было видно лимит, а не упавший бэкенд).
+
+4. Заголовки (snippets/security-headers.conf):
+   Strict-Transport-Security "max-age=31536000; includeSubDomains" - год, поддоменов без https не осталось
+   X-Content-Type-Options "nosniff"
+   X-Frame-Options "DENY" - защита от clickjacking
+   Referrer-Policy "strict-origin-when-cross-origin" - на чужие сайты уходит только домен
+   Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+   Cross-Origin-Opener-Policy "same-origin"
+   Content-Security-Policy "default-src 'none'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+   CSP по плану собирался сначала включить в Report-Only, чтобы не сломать приложение. Но у заглушки нет ни JS, ни сторонних ресурсов (стили отдельным файлом, без inline), ломать нечего - включил сразу боевой.
+   Заголовки подключаются через include на уровне server. В location своих add_header быть не должно: если там есть хоть один, nginx перестает наследовать все заголовки сверху.
+
+5. Скрытые файлы (snippets/deny-hidden.conf):
+   location ~ /\.(?!well-known/) - на /.git, /.env и все остальное, что начинается с точки, 404. /.well-known/ исключен, без него не продлится сертификат. 404, а не 403 - 403 подтверждает, что файл есть.
+
+6. DNS CAA:
+   Добавил у регистратора ssfp.ru. CAA 0 issue "letsencrypt.org" - выпускать сертификаты для домена может только Let's Encrypt.
+
+Применение:
+   sudo cp configs/nginx/conf.d/hardening.conf /etc/nginx/conf.d/
+   sudo cp configs/nginx/snippets/*.conf /etc/nginx/snippets/
+   sudo cp configs/nginx/sites-available/* /etc/nginx/sites-available/
+   sudo ln -s /etc/nginx/sites-available/ssfp.ru /etc/nginx/sites-enabled/
+   sudo ln -s /etc/nginx/sites-available/00-default /etc/nginx/sites-enabled/
+   sudo nginx -t && sudo systemctl reload nginx
+   sudo certbot renew --dry-run
+
+Проверка: https - HTTP/2 200 со всеми заголовками, http - 301, по IP соединение закрывается без ответа, /.git/config - 404, POST - 403, из 40 запросов подряд 31 x 200 и 9 x 429. Пробное продление сертификата прошло.
+
+Замер после:
+SSL Labs: A+
+securityheaders: A+
+
+Косяк по ходу: после включения дефолтного server SSL Labs показал Session resumption: No (IDs assigned but not accepted), до этого было Yes. Кэш TLS-сессий включался в конфиге certbot только внутри server ssfp.ru, а возобновление сессии происходит в начале рукопожатия, когда действуют настройки дефолтного server - а в 00-default кэша нет. Перенес ssl_session_cache shared:le_nginx_SSL:10m и ssl_session_timeout 1440m на уровень http (conf.d/hardening.conf), имя и размер зоны те же, что у certbot. Проверка через openssl s_client -sess_out / -sess_in: Reused.
