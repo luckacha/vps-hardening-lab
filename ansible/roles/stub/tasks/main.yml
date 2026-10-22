@@ -1,0 +1,27 @@
+- name: Файлы заглушки
+  ansible.builtin.copy:
+    src: "{{ stub_src }}"
+    dest: "{{ stub_dir }}/"
+    owner: root
+    group: root
+    mode: u=rwX,g=rX,o=rX
+  register: stub_files
+
+- name: Собрать и запустить заглушку
+  community.docker.docker_compose_v2:
+    project_src: "{{ stub_dir }}"
+    build: "{{ 'always' if stub_files.changed else 'policy' }}"
+    state: present
+
+- name: Дождаться healthy
+  ansible.builtin.command: "docker inspect -f {% raw %}'{{.State.Health.Status}}'{% endraw %} {{ stub_container }}"
+  register: stub_health
+  until: stub_health.stdout == 'healthy'
+  retries: 12
+  delay: 5
+  changed_when: false
+
+- name: Заглушка отвечает на localhost
+  ansible.builtin.uri:
+    url: http://127.0.0.1:8080/
+    status_code: 200

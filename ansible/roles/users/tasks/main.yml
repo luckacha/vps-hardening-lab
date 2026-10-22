@@ -1,0 +1,28 @@
+- name: Проверить переменные
+  ansible.builtin.assert:
+    that:
+      - admin_pubkeys | length > 0
+      - admin_password_hash is defined
+    fail_msg: "Нужны admin_pubkeys и admin_password_hash, иначе после отключения root не будет ни входа, ни sudo"
+
+- name: Основной пользователь
+  ansible.builtin.user:
+    name: "{{ admin_user }}"
+    shell: /bin/bash
+    groups: sudo
+    append: true
+    password: "{{ admin_password_hash }}"
+    update_password: on_create
+
+- name: Домашний каталог только для владельца
+  ansible.builtin.file:
+    path: "/home/{{ admin_user }}"
+    state: directory
+    mode: "0700"
+
+- name: SSH-ключи
+  ansible.posix.authorized_key:
+    user: "{{ admin_user }}"
+    key: "{{ item }}"
+    state: present
+  loop: "{{ admin_pubkeys }}"

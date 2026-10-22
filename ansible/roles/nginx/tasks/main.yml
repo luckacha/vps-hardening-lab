@@ -1,0 +1,136 @@
+- name: Поставить nginx и certbot
+  ansible.builtin.apt:
+    name:
+      - nginx
+      - certbot
+      - python3-certbot-nginx
+    state: present
+
+- name: Скрыть версию nginx
+  ansible.builtin.lineinfile:
+    path: /etc/nginx/nginx.conf
+    regexp: '^\s*#?\s*server_tokens\s'
+    line: "\tserver_tokens off;"
+  notify: Перезагрузить nginx
+
+- name: Только TLS 1.2 и 1.3
+  ansible.builtin.lineinfile:
+    path: /etc/nginx/nginx.conf
+    regexp: '^\s*ssl_protocols\s'
+    line: "\tssl_protocols TLSv1.2 TLSv1.3;"
+  notify: Перезагрузить nginx
+
+- name: Лимиты и кэш TLS-сессий
+  ansible.builtin.copy:
+    src: "{{ configs_dir }}/nginx/conf.d/hardening.conf"
+    dest: /etc/nginx/conf.d/hardening.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Перезагрузить nginx
+
+- name: Сниппеты
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: /etc/nginx/snippets/
+    owner: root
+    group: root
+    mode: "0644"
+  with_fileglob: "{{ configs_dir }}/nginx/snippets/*.conf"
+  notify: Перезагрузить nginx
+
+- name: Дефолтный server
+  ansible.builtin.copy:
+    src: "{{ configs_dir }}/nginx/sites-available/00-default"
+    dest: /etc/nginx/sites-available/00-default
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Перезагрузить nginx
+
+- name: Убрать сайт Debian по умолчанию
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  notify: Перезагрузить nginx
+
+- name: Включить дефолтный server
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/00-default
+    dest: /etc/nginx/sites-enabled/00-default
+    state: link
+  notify: Перезагрузить nginx
+
+- name: Есть ли сертификат
+  ansible.builtin.stat:
+    path: "/etc/letsencrypt/live/{{ domain }}/fullchain.pem"
+  register: nginx_cert
+
+- name: Получить сертификат
+  when: not nginx_cert.stat.exists
+  block:
+    - name: Нужен email для Let's Encrypt
+      ansible.builtin.assert:
+        that: certbot_email | length > 0
+        fail_msg: "Сертификата нет, задай certbot_email (и проверь, что A-запись {{ domain }} уже смотрит на этот сервер)"
+
+    - name: Временный сайт на 80 для проверки домена
+      ansible.builtin.copy:
+        content: |
+          server {
+              listen 80;
+              server_name {{ ([domain] + domain_aliases) | join(' ') }};
+              root /var/www/html;
+          }
+        dest: /etc/nginx/sites-enabled/acme-bootstrap
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Проверить конфиг nginx
+      ansible.builtin.command: nginx -t
+      changed_when: false
+
+    - name: Перезагрузить nginx с временным сайтом
+      ansible.builtin.service:
+        name: nginx
+        state: reloaded
+
+    - name: Certbot
+      ansible.builtin.command: >-
+        certbot certonly --nginx --non-interactive --agree-tos
+        -m {{ certbot_email }}
+        --key-type ecdsa
+        --cert-name {{ domain }}
+        -d {{ ([domain] + domain_aliases) | join(' -d ') }}
+        --deploy-hook "systemctl reload nginx"
+      args:
+        creates: "/etc/letsencrypt/live/{{ domain }}/fullchain.pem"
+
+  always:
+    - name: Убрать временный сайт
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/acme-bootstrap
+        state: absent
+
+- name: Сайт {{ domain }}
+  ansible.builtin.copy:
+    src: "{{ configs_dir }}/nginx/sites-available/{{ domain }}"
+    dest: "/etc/nginx/sites-available/{{ domain }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Перезагрузить nginx
+
+- name: Включить сайт {{ domain }}
+  ansible.builtin.file:
+    src: "/etc/nginx/sites-available/{{ domain }}"
+    dest: "/etc/nginx/sites-enabled/{{ domain }}"
+    state: link
+  notify: Перезагрузить nginx
+
+- name: Включить nginx
+  ansible.builtin.service:
+    name: nginx
+    state: started
+    enabled: true

@@ -1,0 +1,10 @@
+- name: Перезагрузить nginx
+  listen: Перезагрузить nginx
+  ansible.builtin.command: nginx -t
+  changed_when: false
+
+- name: Reload nginx
+  listen: Перезагрузить nginx
+  ansible.builtin.service:
+    name: nginx
+    state: reloaded

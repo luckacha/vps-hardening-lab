@@ -1,0 +1,20 @@
+- name: Харденинг VPS
+  hosts: vps
+  become: true
+  roles:
+    - role: system
+      tags: system
+    - role: users
+      tags: users
+    - role: fail2ban
+      tags: fail2ban
+    - role: firewall
+      tags: firewall
+    - role: docker
+      tags: docker
+    - role: nginx
+      tags: nginx
+    - role: stub
+      tags: stub
+    - role: ssh
+      tags: ssh

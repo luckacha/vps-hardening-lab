@@ -1,0 +1,10 @@
+- name: Перезапустить fail2ban
+  listen: Перезапустить fail2ban
+  ansible.builtin.command: fail2ban-client -t
+  changed_when: false
+
+- name: Restart fail2ban
+  listen: Перезапустить fail2ban
+  ansible.builtin.service:
+    name: fail2ban
+    state: restarted

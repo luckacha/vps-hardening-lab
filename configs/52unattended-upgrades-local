@@ -1,0 +1,6 @@
+Unattended-Upgrade::Origins-Pattern {
+        "origin=Docker,codename=${distro_codename},label=Docker CE";
+};
+Unattended-Upgrade::Remove-Unused-Dependencies "true";
+Unattended-Upgrade::Automatic-Reboot "true";
+Unattended-Upgrade::Automatic-Reboot-Time "04:00";

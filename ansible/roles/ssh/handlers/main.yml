@@ -1,0 +1,10 @@
+- name: Перезагрузить ssh
+  listen: Перезагрузить ssh
+  ansible.builtin.command: /usr/sbin/sshd -t
+  changed_when: false
+
+- name: Reload ssh
+  listen: Перезагрузить ssh
+  ansible.builtin.service:
+    name: ssh
+    state: reloaded

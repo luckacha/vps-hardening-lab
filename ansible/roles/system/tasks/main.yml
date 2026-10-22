@@ -1,0 +1,134 @@
+- name: Собрать список сервисов
+  ansible.builtin.service_facts:
+
+- name: Обновить систему
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+    upgrade: dist
+
+- name: Поставить пакеты
+  ansible.builtin.apt:
+    name:
+      - unattended-upgrades
+      - apt-listchanges
+      - apparmor
+      - apparmor-utils
+      - apparmor-profiles
+      - apparmor-profiles-extra
+      - lynis
+      - python3-yaml
+    state: present
+
+- name: Удалить компиляторы и ecryptfs
+  ansible.builtin.apt:
+    name:
+      - build-essential
+      - gcc
+      - g++
+      - ecryptfs-utils
+    state: absent
+    purge: true
+    autoremove: true
+
+- name: Конфиги unattended-upgrades
+  ansible.builtin.copy:
+    src: "{{ configs_dir }}/{{ item }}"
+    dest: "/etc/apt/apt.conf.d/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - 20auto-upgrades
+    - 52unattended-upgrades-local
+
+- name: Sysctl
+  ansible.builtin.copy:
+    src: "{{ configs_dir }}/sysctl/99-hardening.conf"
+    dest: /etc/sysctl.d/99-hardening.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Применить sysctl
+  tags: sysctl
+
+- name: Каталог для конфига systemd-resolved
+  ansible.builtin.file:
+    path: /etc/systemd/resolved.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: "'systemd-resolved.service' in ansible_facts.services"
+
+- name: Выключить LLMNR и MulticastDNS
+  ansible.builtin.copy:
+    src: "{{ configs_dir }}/resolved/hardening.conf"
+    dest: /etc/systemd/resolved.conf.d/hardening.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Перезапустить systemd-resolved
+  when: "'systemd-resolved.service' in ansible_facts.services"
+
+- name: Поставить auditd
+  ansible.builtin.apt:
+    name: auditd
+    state: present
+  tags: auditd
+
+- name: Правила auditd
+  ansible.builtin.copy:
+    src: "{{ configs_dir }}/audit/hardening.rules"
+    dest: /etc/audit/rules.d/hardening.rules
+    owner: root
+    group: root
+    mode: "0640"
+  notify: Загрузить правила auditd
+  tags: auditd
+
+- name: Включить auditd
+  ansible.builtin.service:
+    name: auditd
+    state: started
+    enabled: true
+  tags: auditd
+
+- name: Включить AppArmor
+  ansible.builtin.service:
+    name: apparmor
+    state: started
+    enabled: true
+  tags: apparmor
+
+- name: Создать swap
+  when: ansible_facts.swaptotal_mb == 0
+  tags: swap
+  block:
+    - name: Выделить файл под swap
+      ansible.builtin.command: "fallocate -l {{ swap_size_mb }}M {{ swap_file }}"
+      args:
+        creates: "{{ swap_file }}"
+
+    - name: Права на swap-файл
+      ansible.builtin.file:
+        path: "{{ swap_file }}"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Разметить swap
+      ansible.builtin.command: "mkswap {{ swap_file }}"
+      changed_when: true
+
+    - name: Включить swap
+      ansible.builtin.command: "swapon {{ swap_file }}"
+      changed_when: true
+
+- name: Swap в fstab
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    regexp: '^{{ swap_file }}\s'
+    line: "{{ swap_file }} none swap sw 0 0"
+  when: ansible_facts.swaptotal_mb == 0
+  tags: swap

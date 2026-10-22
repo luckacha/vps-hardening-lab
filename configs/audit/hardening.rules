@@ -44,6 +44,7 @@
 -w /usr/bin/containerd                    -p rwxa -k docker
 -w /usr/bin/docker                        -p x    -k docker
 -w /etc/docker                            -p rwxa -k docker
+-w /etc/docker/daemon.json                -p rwxa -k docker
 -w /etc/containerd                        -p rwxa -k docker
 -w /run/containerd                        -p rwxa -k docker
 -w /usr/lib/systemd/system/docker.service -p rwxa -k docker

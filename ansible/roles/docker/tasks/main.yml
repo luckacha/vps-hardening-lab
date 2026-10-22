@@ -1,0 +1,62 @@
+- name: Архитектура для репозитория
+  ansible.builtin.set_fact:
+    docker_arch: "{{ 'arm64' if ansible_facts.architecture == 'aarch64' else 'amd64' }}"
+    docker_repo_url: https://download.docker.com/linux/debian
+
+- name: Каталог для ключей apt
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ключ репозитория Docker
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/debian/gpg
+    dest: /etc/apt/keyrings/docker.asc
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Репозиторий Docker
+  ansible.builtin.copy:
+    content: "deb [arch={{ docker_arch }} signed-by=/etc/apt/keyrings/docker.asc] {{ docker_repo_url }} {{ ansible_facts.distribution_release }} stable\n"
+    dest: /etc/apt/sources.list.d/docker.list
+    owner: root
+    group: root
+    mode: "0644"
+  register: docker_repo
+
+- name: Поставить Docker
+  ansible.builtin.apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-buildx-plugin
+      - docker-compose-plugin
+    state: present
+    update_cache: "{{ docker_repo.changed }}"
+
+- name: Конфиг daemon.json
+  ansible.builtin.copy:
+    src: "{{ configs_dir }}/docker/daemon.json"
+    dest: /etc/docker/daemon.json
+    owner: root
+    group: root
+    mode: "0644"
+    validate: dockerd --validate --config-file %s
+  notify: Перезапустить docker
+
+- name: Включить docker
+  ansible.builtin.service:
+    name: docker
+    state: started
+    enabled: true
+
+- name: Пользователь в группе docker
+  ansible.builtin.user:
+    name: "{{ admin_user }}"
+    groups: docker
+    append: true

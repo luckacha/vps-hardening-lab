@@ -1,0 +1,22 @@
+- name: Поставить fail2ban
+  ansible.builtin.apt:
+    name:
+      - fail2ban
+      - python3-systemd
+      - nftables
+    state: present
+
+- name: Конфиг jail.local
+  ansible.builtin.copy:
+    src: "{{ configs_dir }}/fail2ban/jail.local"
+    dest: /etc/fail2ban/jail.local
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Перезапустить fail2ban
+
+- name: Включить fail2ban
+  ansible.builtin.service:
+    name: fail2ban
+    state: started
+    enabled: true

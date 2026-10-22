@@ -1,0 +1,16 @@
+configs_dir: "{{ playbook_dir }}/../configs"
+stub_src: "{{ playbook_dir }}/../docker/stub/"
+
+admin_user: amored
+admin_pubkeys: []
+
+domain: ssfp.ru
+domain_aliases:
+  - www.ssfp.ru
+certbot_email: ""
+
+swap_file: /swapfile
+swap_size_mb: 4096
+
+stub_dir: /opt/stub
+stub_container: ssfp-stub

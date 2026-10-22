@@ -1,0 +1,15 @@
+- name: Проверить, что пользователя пустит AllowUsers
+  ansible.builtin.assert:
+    that:
+      - lookup('ansible.builtin.file', configs_dir ~ '/ssh/01-hardening.conf') is search('(?m)^AllowUsers(\s.*)?\s' ~ admin_user ~ '(\s|$)')
+    fail_msg: "{{ admin_user }} нет в AllowUsers, после применения войти будет нельзя"
+
+- name: Конфиг sshd
+  ansible.builtin.copy:
+    src: "{{ configs_dir }}/ssh/01-hardening.conf"
+    dest: /etc/ssh/sshd_config.d/01-hardening.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/sbin/sshd -t -f %s
+  notify: Перезагрузить ssh

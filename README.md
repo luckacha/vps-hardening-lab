@@ -11,10 +11,10 @@ Lynis security scan details:
 Docker-bench-security:
 Score: 1
 Pass: 29
-Warn: 24
+Warn: 22
 
 Ports:
-18 портов открыто (7 на UDP, 11 на TCP)
+18 слушающих сокетов (6 UDP, 12 TCP), из них снаружи 8
 
 ## Харденинг
 
@@ -32,10 +32,14 @@ Unattended-upgrades отвечает за автоматическую уста�
 `APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";`
 При этих параметрах список пакетов автоматически обновляется, пакеты автоматически устанавливаются. Однако обновления ядра срабатывают только после перезагрузки. Для этого нужен свой конфиг /etc/apt/apt.conf.d/52unattended-upgrades-local, с числом в начале больше чем 50 (основной 50unattended-upgrades сам обновляется вместе с пакетом, поэтому его не трогаю, а свои настройки кладу в отдельный файл, который читается после него):
-`Unattended-Upgrade::Remove-Unused-Dependencies "true";
+`Unattended-Upgrade::Origins-Pattern {
+        "origin=Docker,codename=${distro_codename},label=Docker CE";
+ };
+ Unattended-Upgrade::Remove-Unused-Dependencies "true";
  Unattended-Upgrade::Automatic-Reboot "true";
  Unattended-Upgrade::Automatic-Reboot-Time "04:00";`
  В таком случае, в 04:00 система будет перезагружаться, все пакеты будут успешно установлены.
+ Origins-Pattern добавил в конце, после замера (подробнее в «Замер после»): по умолчанию unattended-upgrades ставит только пакеты Debian, а Docker из своего репозитория download.docker.com. Списки в apt.conf складываются, так что правила Debian из 50unattended-upgrades остаются. Копия в configs/52unattended-upgrades-local.
 Осознанно выбираю второй вариант, так как небольшой простой моего сервера ночью (~2 минуты) не является для меня особой проблемой.
 
 2. Пользователи:
@@ -80,7 +84,7 @@ APT::Periodic::Unattended-Upgrade "1";`
 
 6. auditd:
    sudo apt-get install auditd
-   Правила лежат в /etc/audit/rules.d/hardening.rules (копия в configs/audit/hardening.rules), 35 правил (позже в слое Docker добавил еще 5, итого 40). Следят за изменением пользователей и паролей, sudoers, конфигов SSH, cron и systemd-юнитов, sysctl, apt, nginx, самого auditd, за загрузкой модулей ядра, сменой времени и за Docker (рекомендации CIS, раздел 1.1).
+   Правила лежат в /etc/audit/rules.d/hardening.rules (копия в configs/audit/hardening.rules), 35 правил (позже в слое Docker добавил еще 6, итого 41). Следят за изменением пользователей и паролей, sudoers, конфигов SSH, cron и systemd-юнитов, sysctl, apt, nginx, самого auditd, за загрузкой модулей ядра, сменой времени и за Docker (рекомендации CIS, раздел 1.1).
    Файл назван с буквы, а не с цифры: augenrules склеивает файлы по алфавиту, и файл "99-..." встал бы раньше audit.rules, где стоит -D (удалить все правила).
    Загрузка и проверка:
    sudo augenrules --load
@@ -270,7 +274,7 @@ securityheaders: A+
    mem_limit 64m, cpus 0.5, pids_limit 64 - взломанный или заспамленный контейнер не съест сервер, pids_limit еще и от fork-бомбы
    ports 127.0.0.1:8080:8080 - порт только на localhost, Docker обходит ufw (см. слой Firewall), наружу отдает nginx на хосте
    restart: unless-stopped - поднимается после ночной автоперезагрузки, но не после ручного docker stop
-   healthcheck - wget раз в 30 секунд, статус (healthy) в docker ps
+   healthcheck - wget раз в 30 секунд, статус (healthy) в docker ps. Сначала был в compose.yml, потом перенес в Dockerfile (HEALTHCHECK), см. «Замер после», образ стал ssfp-stub:1.1
    AppArmor у контейнера docker-default.
 
 3. daemon.json (/etc/docker/daemon.json, копия в configs/docker/daemon.json):
@@ -285,7 +289,7 @@ securityheaders: A+
    Ротация применяется только к новым контейнерам, поэтому заглушку пересоздал. Проверка: live=true, LogConfig max-file:3 max-size:10m, процессов docker-proxy нет, сайт 200, порт 8080 по внешнему IP не отвечает.
 
 4. auditd для Docker:
-   Добавил в hardening.rules файлы, которые проверяет docker-bench (1.1.x): /etc/default/docker, /etc/containerd/config.toml, /run/containerd/containerd.sock, /usr/bin/containerd-shim-runc-v2, /usr/bin/runc (runc реально запускает контейнеры, его подмена - компрометация всех контейнеров). Всего 14 правил с ключом docker.
+   Добавил в hardening.rules файлы, которые проверяет docker-bench (1.1.x): /etc/default/docker, /etc/containerd/config.toml, /run/containerd/containerd.sock, /usr/bin/containerd-shim-runc-v2, /usr/bin/runc (runc реально запускает контейнеры, его подмена - компрометация всех контейнеров). Всего 14 правил с ключом docker, после замера добавил 15-е на /etc/docker/daemon.json.
    augenrules ругается "Old style watch rules are slower" - советует писать правила через syscall (-a always,exit -F path=... -F perm=) вместо -w. На моей нагрузке разницы нет, оставил -w, так читаемее.
 
 Принятые риски:
@@ -297,17 +301,15 @@ securityheaders: A+
 
 ### Замер «после»
 
-| | До | После |
-|---|---|---|
-| Lynis 3.1.4, Hardening index | 61 | 71 |
-| Lynis, предупреждения / подсказки | 1 / 62 | 2 / 51 (оба предупреждения разобраны ниже) |
-| docker-bench, Score | 1 | 58 |
-| docker-bench, проверки PASS / WARN | 29 / 22 | 76 / 8 |
-| Сокеты, слушающие снаружи (ss -tulpn) | 8: 22, 80, 443, LLMNR 5355 (tcp и udp, IPv4 и IPv6) | 4: 22 (IPv4 и IPv6), 80, 443 |
-| nmap снаружи, TCP все 65535 | - | 22, 80, 443 open, 65532 filtered |
-| SSL Labs | A | A+ |
-| securityheaders | D | A+ |
-| fail2ban sshd | - | 26 банов, 145 неудачных попыток за первые 3.5 часа |
+Lynis 3.1.4, Hardening index: 61 -> 71
+Lynis, предупреждения / подсказки: 1 / 62 -> 2 / 51 (оба предупреждения разобраны ниже)
+docker-bench, Score: 1 -> 60
+docker-bench, PASS / WARN: 29 / 22 -> 76 / 7
+Сокеты, слушающие снаружи (ss -tulpn): 8 (22, 80, 443 и LLMNR 5355 по tcp и udp, IPv4 и IPv6) -> 4 (22 по IPv4 и IPv6, 80, 443)
+nmap снаружи, все 65535 TCP: 22, 80, 443 open, остальные 65532 filtered
+SSL Labs: A -> A+
+securityheaders: D -> A+
+fail2ban sshd: 26 банов и 145 неудачных попыток за первые 3.5 часа
 
 Число проверок docker-bench выросло с 86 до 117: при замере до контейнеров не было, теперь проверяется живая заглушка (разделы 4 и 5).
 Всего сокетов в ss стало даже больше (было 18, стало 21), но все новые только на 127.0.0.1 - это VS Code server и xray. Снаружи их не видно, что и подтвердил nmap.
@@ -316,13 +318,15 @@ securityheaders: A+
    PKGS-7392 (уязвимые пакеты) - вышло обновление безопасности bind9, зеркало получило его после утреннего запуска unattended-upgrades. Ставится автоматически ночью, настройка работает.
    PKGS-7388 (нет репозитория безопасности) - ложное срабатывание: trixie-security есть в /etc/apt/sources.list.d/selectel.sources, но он в новом формате deb822, а Lynis 3.1.4 ищет только строки deb в sources.list и *.list. В замере до предупреждения не было, потому что sources.list тогда еще не был пустым.
 
-Оставшиеся предупреждения docker-bench:
+Предупреждения docker-bench. В первом замере было Score 58 и 8 WARN, два исправил сразу после него и перемерил:
+   1.1.11 - не было отдельного правила аудита на /etc/docker/daemon.json (каталог /etc/docker под аудитом, но docker-bench ищет точный путь). Добавил -w /etc/docker/daemon.json -p rwxa -k docker, теперь PASS.
+   4.6 - healthcheck заглушки был в compose.yml, а docker-bench смотрит в сам образ. Перенес HEALTHCHECK в Dockerfile, из compose убрал, заглушка из списка пропала.
+Остались:
    1.1.1, 2.9, 2.12, 2.13, 4.5 - принятые риски (см. слой Docker).
-   1.1.11 - нет отдельного правила аудита на /etc/docker/daemon.json. Каталог /etc/docker под аудитом, так что изменение файла все равно видно, но docker-bench ищет точный путь.
-   4.6 - у образов нет HEALTHCHECK. У заглушки healthcheck задан в compose.yml, а docker-bench смотрит в сам образ. Остальные образы - инструменты для замеров.
+   4.6 - у образов нет HEALTHCHECK. Заглушка теперь проходит, остались базовый nginx-unprivileged, testssl.sh и alpine - это инструменты для замеров и база для сборки, контейнеры из них постоянно не крутятся.
    5.9 - открыт порт 8080 у заглушки. Это ручная проверка, порт нужен и опубликован только на 127.0.0.1.
 
-Docker не обновляется через unattended-upgrades: по умолчанию он ставит только пакеты из репозиториев Debian, а docker-ce из download.docker.com. Пока обновляю вручную.
+Docker не обновлялся через unattended-upgrades: по умолчанию он ставит только пакеты из репозиториев Debian, а docker-ce из download.docker.com. При замере стоял 29.9.1, а в репозитории уже был 29.9.2. Добавил origin=Docker в 52unattended-upgrades-local (см. слой Система). Обновление dockerd контейнеры не роняет благодаря live-restore.
 
 Косяк по ходу: docker-bench через sh
    В README docker-bench пример запуска через sh, но на Debian sh - это dash, который не понимает [[ ]] из bash. Проверки 2.2, 2.4, 2.5, 2.8, 2.9 и 2.12 (как раз те, что читают daemon.json) тихо считаются невыполненными: через sh 2.2 показывала WARN при "icc": false в конфиге. Запускать только через bash.
@@ -332,3 +336,47 @@ Docker не обновляется через unattended-upgrades: по умол
 Косяк по ходу: nmap через TUN
    Первый внешний скан показал около 1500 открытых портов, причем без 22, 80 и 443, а 8080, который опубликован только на 127.0.0.1, был open. Задержка 0.76 мс (до сервера несколько мс), tracert не отвечал уже на первом узле, а tcpdump на сервере во время скана не увидел ни одного SYN. Причина - TUN-режим VPN-клиента Happ на ПК: весь трафик шел через его виртуальный адаптер, и клиент сам принимал любое TCP-соединение. После выключения TUN (прокси для браузера оставил) скан стал честным.
    Вывод: внешний скан делать с выключенным TUN, и проверять задержку в строке Host is up - если доли миллисекунды, отвечает не сервер.
+
+### Ansible
+
+Весь харденинг выше собран в плейбук ansible/ для чистого Debian 13: если сервер придется переустанавливать, руками ничего повторять не надо. Конфиги плейбук берет прямо из configs/ и docker/stub/, своих копий у него нет, поэтому README, конфиги и плейбук не разъезжаются.
+
+Роли идут в том же порядке, что и слои:
+   system - обновления, unattended-upgrades, sysctl, systemd-resolved, удаление компиляторов и ecryptfs, auditd, AppArmor, swap (если swap нет)
+   users - пользователь amored, пароль для sudo, ключи, домашний каталог 700
+   fail2ban - fail2ban, python3-systemd, nftables, jail.local
+   firewall - ufw: deny по умолчанию, 22, 80, 443, logging low
+   docker - репозиторий download.docker.com, Docker, daemon.json, amored в группе docker
+   nginx - nginx.conf (server_tokens off, только TLS 1.2/1.3), hardening.conf, сниппеты, 00-default, сертификат, сайт ssfp.ru
+   stub - заглушка в /opt/stub, сборка через compose, ждет healthy
+   ssh - 01-hardening.conf
+SSH идет последней: после нее root по SSH уже не войдет, а плейбук на чистом сервере запускается как раз от root. Перед этим роль users проверяет, что ключи и пароль заданы, а роль ssh - что amored есть в AllowUsers. Иначе можно запереть себя на сервере.
+
+Сертификат: если его нет, плейбук поднимает временный сайт на 80 без редиректа, получает сертификат через certbot --nginx (заодно certbot кладет options-ssl-nginx.conf и ssl-dhparams.pem, на них ссылается конфиг сайта), удаляет временный сайт и только потом включает боевой ssfp.ru. Без этого nginx -t падает на отсутствующем сертификате. Перед запуском A-запись уже должна смотреть на новый сервер.
+
+Запуск:
+   python3 -m venv ~/.venvs/ansible
+   ~/.venvs/ansible/bin/pip install ansible-core ansible-lint
+   cd ansible
+   ansible-galaxy collection install -r requirements.yml
+   ansible-vault create secrets.yml
+   (внутри admin_pubkeys - список ключей, admin_password_hash - хеш из mkpasswd -m yescrypt, certbot_email; secrets.yml в .gitignore)
+   первый раз, на чистом сервере:
+   ansible-playbook site.yml -e ansible_user=root -e @secrets.yml --ask-vault-pass
+   (именно -e, а не -u: ansible_user из inventory.ini сильнее -u)
+   дальше, на живом сервере:
+   ansible-playbook site.yml -K -e @secrets.yml --ask-vault-pass --check --diff
+   ansible-playbook site.yml -K -e @secrets.yml --ask-vault-pass --tags nginx
+
+Проверка:
+   ansible-playbook site.yml --syntax-check
+   ansible-lint (0 ошибок, профиль production)
+   Прогнал на чистом Debian 13 в контейнере с systemd (ansible/test): первый прогон 0 ошибок, повторный changed=0, то есть плейбук идемпотентный. После прогона внутри: ssh, fail2ban, nginx, docker active; sshd -T - permitrootlogin no, allowusers amored; ufw как на сервере; заглушка healthy; https - 200 с заголовками, http - 301, по IP обрыв соединения, чужой SNI - обрыв рукопожатия.
+   docker build -t hardening-clean:trixie ansible/test
+   docker run -d --name hardening-test --privileged --cgroupns=host --security-opt no-new-privileges=false -v /sys/fs/cgroup:/sys/fs/cgroup:rw -v hardening-test-docker:/var/lib/docker -v hardening-test-containerd:/var/lib/containerd --tmpfs /run --tmpfs /run/lock hardening-clean:trixie
+   ansible-playbook -i test/inventory.ini -e @<тестовые переменные> --skip-tags auditd,apparmor,sysctl,swap site.yml
+
+Что в контейнере не проверить:
+   auditd, AppArmor, kernel.* в sysctl и swap - общие с ядром хоста. Привилегированный контейнер поменял бы их на самом сервере, а auditd в контейнере вообще перехватил бы аудит у auditd хоста. Эти задачи пропущены тегами.
+   Выпуск сертификата - нужен настоящий домен. В тесте подложил самоподписанный сертификат, задачи certbot пропустились. Полностью проверить можно только на новом VPS.
+   /var/lib/docker и /var/lib/containerd вынесены в тома: Docker внутри контейнера не может собрать образ, когда overlay лежит на overlay.
