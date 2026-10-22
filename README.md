@@ -115,3 +115,48 @@ APT::Periodic::Unattended-Upgrade "1";`
    sudo find /etc -group amored -exec chgrp -h root {} +
    sudo chgrp shadow /etc/shadow /etc/gshadow /etc/shadow- /etc/gshadow-
 Выводы: никогда не делать chown -R на системных каталогах, для чтения конфигов есть sudo. И то, что я смог откатить /etc через контейнер без sudo, - еще одна демонстрация того, что группа docker = root.
+
+### Слой «SSH + fail2ban»
+
+1. SSH:
+   Свои настройки кладу в /etc/ssh/sshd_config.d/01-hardening.conf (копия в configs/ssh/01-hardening.conf), основной sshd_config не трогаю.
+   В sshd побеждает первое значение параметра, а Include стоит в самом начале sshd_config. Поэтому файл назван с "01-": он читается раньше 50-cloud-init.conf и раньше основного конфига, где, кстати, дважды стоит PermitRootLogin yes (его и так перекрывал cloud-init).
+
+   PermitRootLogin no
+   AllowUsers amored
+   PubkeyAuthentication yes
+   AuthenticationMethods publickey
+   PasswordAuthentication no
+   KbdInteractiveAuthentication no
+   PermitEmptyPasswords no
+   MaxAuthTries 3
+   LoginGraceTime 30
+   AllowTcpForwarding local
+   AllowStreamLocalForwarding no
+   GatewayPorts no
+   PermitTunnel no
+   AllowAgentForwarding no
+   X11Forwarding no
+   ClientAliveInterval 300
+   ClientAliveCountMax 2
+   LogLevel VERBOSE
+
+   Вход только под amored и только по ключу (ключи с ПК и айфона). Учебный пользователь daniil_plandin по SSH больше не доступен вообще.
+   AllowTcpForwarding local - оставил только локальный проброс, он нужен VS Code Remote-SSH. Обратный проброс, туннели, проброс агента и X11 выключены.
+   LogLevel VERBOSE - в логе видно отпечаток ключа, которым вошли, и fail2ban видит больше событий.
+   Порт 22 не менял: от сканеров это почти не спасает, а защищает вход ключ и fail2ban. Принятый риск.
+
+   Применение (старую сессию не закрываю, пока не проверю вход в новой):
+   sudo cp configs/ssh/01-hardening.conf /etc/ssh/sshd_config.d/
+   sudo sshd -t && sudo systemctl reload ssh
+   sudo sshd -T | grep -E 'permitrootlogin|allowusers|allowtcpforwarding|loglevel|maxauthtries'
+   Проверил вход с ПК, с айфона и через VS Code.
+
+2. fail2ban:
+   Уже стоял с backend = systemd (jail.d/defaults-debian.conf), но с настройками по умолчанию. Пишу /etc/fail2ban/jail.local (копия в configs/fail2ban/jail.local), jail.conf не трогаю, он обновляется с пакетом.
+   Для sshd: 3 попытки за 10 минут - бан на час, каждый следующий бан в 2 раза дольше, до недели (bantime.increment). mode = aggressive ловит и ошибки по ключам, и сканеры, которые обрывают соединение до авторизации.
+   sudo fail2ban-client -t
+   sudo systemctl restart fail2ban
+   sudo fail2ban-client status sshd
+   Сразу после включения: 6 забаненных IP, 10 неудачных попыток. Если сам себя забаню - разбан из другой сети или консоли хостинга:
+   sudo fail2ban-client set sshd unbanip <ip>

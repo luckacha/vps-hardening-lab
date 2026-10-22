@@ -1,52 +1,45 @@
-## /etc/audit/rules.d/hardening.rules
-## augenrules склеивает файлы из rules.d по алфавиту. Имя начинается с буквы "h",
-## поэтому файл идёт ПОСЛЕ audit.rules, где стоит -D (удалить все правила).
-## Если назвать его "50-..." или "99-...", цифры отсортируются раньше "audit.rules",
-## и -D сотрёт эти правила.
-
-## --- Учётные записи и пароли ---
+## Учётные записи и пароли 
 -w /etc/passwd  -p wa -k identity
 -w /etc/shadow  -p wa -k identity
 -w /etc/group   -p wa -k identity
 -w /etc/gshadow -p wa -k identity
 -w /etc/security/opasswd -p wa -k identity
 
-## --- Повышение привилегий ---
+##  Повышение привилегий 
 -w /etc/sudoers   -p wa -k sudoers
 -w /etc/sudoers.d -p wa -k sudoers
 ## все запуски sudo/su живыми пользователями (auid>=1000, сессия есть)
 -a always,exit -F path=/usr/bin/sudo -F perm=x -F auid>=1000 -F auid!=unset -k priv_exec
 -a always,exit -F path=/usr/bin/su   -F perm=x -F auid>=1000 -F auid!=unset -k priv_exec
 
-## --- SSH ---
+##  SSH 
 -w /etc/ssh/sshd_config   -p wa -k sshd
 -w /etc/ssh/sshd_config.d -p wa -k sshd
 
-## --- Входы в систему ---
+##  Входы в систему 
 -w /var/log/lastlog -p wa -k logins
 -w /var/log/wtmp    -p wa -k logins
 -w /var/log/btmp    -p wa -k logins
 
-## --- Закрепление в системе: cron и systemd-юниты ---
+##  Закрепление в системе: cron и systemd-юниты 
 -w /etc/crontab           -p wa -k cron
 -w /etc/cron.d            -p wa -k cron
 -w /var/spool/cron/crontabs -p wa -k cron
 -w /etc/systemd/system    -p wa -k systemd
 
-## --- Конфиги слоёв харденинга (кто тронет, видно сразу) ---
+## Конфиги слоёв харденинга (кто тронет, видно сразу) 
 -w /etc/sysctl.conf     -p wa -k sysctl
 -w /etc/sysctl.d        -p wa -k sysctl
 -w /etc/apt/apt.conf.d  -p wa -k apt
 -w /etc/nginx           -p wa -k nginx
 -w /etc/audit           -p wa -k auditconfig
 
-## --- Ядро: загрузка модулей, смена времени ---
+##  Ядро: загрузка модулей, смена времени 
 -a always,exit -F arch=b64 -S init_module,finit_module,delete_module -k modules
 -a always,exit -F arch=b64 -S adjtimex,settimeofday,clock_settime -k time_change
 -w /etc/localtime -p wa -k time_change
 
-## --- Docker (рекомендации CIS / docker-bench, раздел 1.1) ---
-## Группа docker = root (см. инцидент №2), поэтому действия с Docker важно видеть.
+##  Docker 
 -w /usr/bin/dockerd                       -p rwxa -k docker
 -w /usr/bin/containerd                    -p rwxa -k docker
 -w /usr/bin/docker                        -p x    -k docker
@@ -55,7 +48,4 @@
 -w /run/containerd                        -p rwxa -k docker
 -w /usr/lib/systemd/system/docker.service -p rwxa -k docker
 -w /usr/lib/systemd/system/docker.socket  -p rwxa -k docker
-## /var/lib/docker: watch на каталог рекурсивный. При живых контейнерах
-## может сильно шуметь. Если audit.log раздувается, это правило убрать
-## и указать его в README как принятый риск.
 -w /var/lib/docker                        -p wa   -k docker

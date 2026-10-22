@@ -1,0 +1,18 @@
+## /etc/fail2ban/jail.local
+
+[DEFAULT]
+ignoreip = 127.0.0.1/8 ::1
+bantime  = 1h
+findtime = 10m
+maxretry = 5
+bantime.increment = true
+bantime.maxtime   = 1w
+banaction          = nftables
+banaction_allports = nftables[type=allports]
+
+[sshd]
+enabled  = true
+backend  = systemd
+## aggressive ловит и ошибки по ключам, и обрывы до авторизации (сканеры)
+mode     = aggressive
+maxretry = 3
