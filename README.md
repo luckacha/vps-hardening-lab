@@ -80,7 +80,7 @@ APT::Periodic::Unattended-Upgrade "1";`
 
 6. auditd:
    sudo apt-get install auditd
-   Правила лежат в /etc/audit/rules.d/hardening.rules (копия в configs/audit/hardening.rules), 35 правил. Следят за изменением пользователей и паролей, sudoers, конфигов SSH, cron и systemd-юнитов, sysctl, apt, nginx, самого auditd, за загрузкой модулей ядра, сменой времени и за Docker (рекомендации CIS, раздел 1.1).
+   Правила лежат в /etc/audit/rules.d/hardening.rules (копия в configs/audit/hardening.rules), 35 правил (позже в слое Docker добавил еще 5, итого 40). Следят за изменением пользователей и паролей, sudoers, конфигов SSH, cron и systemd-юнитов, sysctl, apt, nginx, самого auditd, за загрузкой модулей ядра, сменой времени и за Docker (рекомендации CIS, раздел 1.1).
    Файл назван с буквы, а не с цифры: augenrules склеивает файлы по алфавиту, и файл "99-..." встал бы раньше audit.rules, где стоит -D (удалить все правила).
    Загрузка и проверка:
    sudo augenrules --load
@@ -164,7 +164,7 @@ APT::Periodic::Unattended-Upgrade "1";`
 ### Слой «Firewall»
 
 1. ufw:
-   Снаружи к этому моменту слушали только 22, 80 и 443 (было 18 портов), остальное только на 127.0.0.1. Так что firewall здесь скорее страховка: при default deny новый сервис или отладочный порт не окажется случайно доступен из интернета.
+   Снаружи к этому моменту слушали только 22, 80 и 443 (в замере до снаружи был еще LLMNR на 5355, его выключил в слое Система), остальное только на 127.0.0.1. Так что firewall здесь скорее страховка: при default deny новый сервис или отладочный порт не окажется случайно доступен из интернета.
    sudo ufw default deny incoming
    sudo ufw default allow outgoing
    sudo ufw allow 22/tcp
@@ -251,3 +251,84 @@ SSL Labs: A+
 securityheaders: A+
 
 Косяк по ходу: после включения дефолтного server SSL Labs показал Session resumption: No (IDs assigned but not accepted), до этого было Yes. Кэш TLS-сессий включался в конфиге certbot только внутри server ssfp.ru, а возобновление сессии происходит в начале рукопожатия, когда действуют настройки дефолтного server - а в 00-default кэша нет. Перенес ssl_session_cache shared:le_nginx_SSL:10m и ssl_session_timeout 1440m на уровень http (conf.d/hardening.conf), имя и размер зоны те же, что у certbot. Проверка через openssl s_client -sess_out / -sess_in: Reused.
+
+### Слой «Docker»
+
+1. Уборка:
+   Удалил все образы, тома и сети старых проектов (GitLab и заброшенный проект), кэш сборки и hello-world. Около 7 ГБ образов и 1.5 ГБ томов. Остались только образы инструментов для замеров (testssl.sh, zaproxy) и alpine для проверок.
+
+2. Заглушка в контейнере (docker/stub):
+   Образ на nginxinc/nginx-unprivileged:1.30.6-alpine - nginx внутри работает от uid 101 и слушает 8080, root не нужен. Версия зафиксирована точно, а не stable - образ не поменяется сам при пересборке. Страница и конфиг копируются в образ, а не монтируются с хоста, поэтому образ неизменяемый.
+   Внутренний nginx отдает только GET, без списка файлов, без версии. Заголовки безопасности добавляет nginx на хосте, чтобы не было дублей.
+
+   compose.yml:
+   user: "101:101" - явно не root
+   read_only: true - корневая ФС только на чтение (touch внутри -> Read-only file system)
+   tmpfs /tmp 8 МБ - единственное место для записи (pid и временные файлы nginx)
+   cap_drop: ALL - ни одной capability (CapEff: 0000000000000000)
+   no-new-privileges:true - setuid-бинарники не повысят права
+   mem_limit 64m, cpus 0.5, pids_limit 64 - взломанный или заспамленный контейнер не съест сервер, pids_limit еще и от fork-бомбы
+   ports 127.0.0.1:8080:8080 - порт только на localhost, Docker обходит ufw (см. слой Firewall), наружу отдает nginx на хосте
+   restart: unless-stopped - поднимается после ночной автоперезагрузки, но не после ручного docker stop
+   healthcheck - wget раз в 30 секунд, статус (healthy) в docker ps
+   AppArmor у контейнера docker-default.
+
+3. daemon.json (/etc/docker/daemon.json, копия в configs/docker/daemon.json):
+   "icc": false - контейнеры в дефолтной сети bridge не видят друг друга. На сеть заглушки не действует (compose создает свою), но там контейнер один, а разные compose-проекты и так в разных сетях.
+   "live-restore": true - контейнеры не останавливаются при рестарте dockerd, обновление Docker через unattended-upgrades не уронит сайт.
+   "no-new-privileges": true - то же, что в compose, но по умолчанию для всех контейнеров, включая ручной docker run.
+   "userland-proxy": false - нет отдельного процесса docker-proxy от root на каждый порт, проброс правилами nftables.
+   log-opts max-size 10m, max-file 3 - лог контейнера не больше 30 МБ, без этого растет до конца диска.
+   sudo dockerd --validate --config-file /etc/docker/daemon.json
+   sudo systemctl restart docker
+   docker compose up -d --force-recreate
+   Ротация применяется только к новым контейнерам, поэтому заглушку пересоздал. Проверка: live=true, LogConfig max-file:3 max-size:10m, процессов docker-proxy нет, сайт 200, порт 8080 по внешнему IP не отвечает.
+
+4. auditd для Docker:
+   Добавил в hardening.rules файлы, которые проверяет docker-bench (1.1.x): /etc/default/docker, /etc/containerd/config.toml, /run/containerd/containerd.sock, /usr/bin/containerd-shim-runc-v2, /usr/bin/runc (runc реально запускает контейнеры, его подмена - компрометация всех контейнеров). Всего 14 правил с ключом docker.
+   augenrules ругается "Old style watch rules are slower" - советует писать правила через syscall (-a always,exit -F path=... -F perm=) вместо -w. На моей нагрузке разницы нет, оставил -w, так читаемее.
+
+Принятые риски:
+   2.9 userns-remap - сильная защита (root в контейнере = обычный пользователь на хосте), но меняет хранилище образов и права bind-монтирований, а группа docker все равно = root. У заглушки и так non-root и cap_drop ALL.
+   2.12 авторизация клиента Docker - нужен отдельный плагин, для одного пользователя избыточно.
+   2.13 удаленное логирование - нет второго сервера под логи.
+   1.1.1 отдельный раздел под /var/lib/docker - на VPS один диск, переразметка не стоит того.
+   4.5 Content trust - Docker Content Trust устарел и почти не поддерживается registry, вместо него зафиксирована точная версия образа.
+
+### Замер «после»
+
+| | До | После |
+|---|---|---|
+| Lynis 3.1.4, Hardening index | 61 | 71 |
+| Lynis, предупреждения / подсказки | 1 / 62 | 2 / 51 (оба предупреждения разобраны ниже) |
+| docker-bench, Score | 1 | 58 |
+| docker-bench, проверки PASS / WARN | 29 / 22 | 76 / 8 |
+| Сокеты, слушающие снаружи (ss -tulpn) | 8: 22, 80, 443, LLMNR 5355 (tcp и udp, IPv4 и IPv6) | 4: 22 (IPv4 и IPv6), 80, 443 |
+| nmap снаружи, TCP все 65535 | - | 22, 80, 443 open, 65532 filtered |
+| SSL Labs | A | A+ |
+| securityheaders | D | A+ |
+| fail2ban sshd | - | 26 банов, 145 неудачных попыток за первые 3.5 часа |
+
+Число проверок docker-bench выросло с 86 до 117: при замере до контейнеров не было, теперь проверяется живая заглушка (разделы 4 и 5).
+Всего сокетов в ss стало даже больше (было 18, стало 21), но все новые только на 127.0.0.1 - это VS Code server и xray. Снаружи их не видно, что и подтвердил nmap.
+
+Оставшиеся предупреждения Lynis:
+   PKGS-7392 (уязвимые пакеты) - вышло обновление безопасности bind9, зеркало получило его после утреннего запуска unattended-upgrades. Ставится автоматически ночью, настройка работает.
+   PKGS-7388 (нет репозитория безопасности) - ложное срабатывание: trixie-security есть в /etc/apt/sources.list.d/selectel.sources, но он в новом формате deb822, а Lynis 3.1.4 ищет только строки deb в sources.list и *.list. В замере до предупреждения не было, потому что sources.list тогда еще не был пустым.
+
+Оставшиеся предупреждения docker-bench:
+   1.1.1, 2.9, 2.12, 2.13, 4.5 - принятые риски (см. слой Docker).
+   1.1.11 - нет отдельного правила аудита на /etc/docker/daemon.json. Каталог /etc/docker под аудитом, так что изменение файла все равно видно, но docker-bench ищет точный путь.
+   4.6 - у образов нет HEALTHCHECK. У заглушки healthcheck задан в compose.yml, а docker-bench смотрит в сам образ. Остальные образы - инструменты для замеров.
+   5.9 - открыт порт 8080 у заглушки. Это ручная проверка, порт нужен и опубликован только на 127.0.0.1.
+
+Docker не обновляется через unattended-upgrades: по умолчанию он ставит только пакеты из репозиториев Debian, а docker-ce из download.docker.com. Пока обновляю вручную.
+
+Косяк по ходу: docker-bench через sh
+   В README docker-bench пример запуска через sh, но на Debian sh - это dash, который не понимает [[ ]] из bash. Проверки 2.2, 2.4, 2.5, 2.8, 2.9 и 2.12 (как раз те, что читают daemon.json) тихо считаются невыполненными: через sh 2.2 показывала WARN при "icc": false в конфиге. Запускать только через bash.
+   Плюс в Docker 29 поменялась таблица docker images (третья колонка теперь размер, а не ID), и скрипт сыпал "error: no such object: 13MB". Обошел через свой DOCKER_CONFIG с imagesFormat, где колонки как раньше:
+   sudo env DOCKER_CONFIG=<каталог с config.json> bash docker-bench-security.sh -b -l /tmp/db.log
+
+Косяк по ходу: nmap через TUN
+   Первый внешний скан показал около 1500 открытых портов, причем без 22, 80 и 443, а 8080, который опубликован только на 127.0.0.1, был open. Задержка 0.76 мс (до сервера несколько мс), tracert не отвечал уже на первом узле, а tcpdump на сервере во время скана не увидел ни одного SYN. Причина - TUN-режим VPN-клиента Happ на ПК: весь трафик шел через его виртуальный адаптер, и клиент сам принимал любое TCP-соединение. После выключения TUN (прокси для браузера оставил) скан стал честным.
+   Вывод: внешний скан делать с выключенным TUN, и проверять задержку в строке Host is up - если доли миллисекунды, отвечает не сервер.
